@@ -1,0 +1,2 @@
+"""HideMyAcc Facebook autopost applications."""
+

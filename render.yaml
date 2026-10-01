@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: hidemyacc-studio
+    runtime: docker
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: APP_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: WORKER_TOKEN
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATABASE_PATH
+        value: /app/data/autopost.db
+    disk:
+      name: dashboard-data
+      mountPath: /app/data
+      sizeGB: 1
+

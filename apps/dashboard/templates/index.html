@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Facebook Profiles</title>
+  <link rel="stylesheet" href="/static/app.css?v=4">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div><p class="eyebrow">HIDEMYACC</p><h1>Facebook Profiles</h1><p>Chọn profile, nhập link nguồn cho từng Page rồi tạo và đăng Reel.</p></div>
+      <div class="browser-box"><span id="browser-status">Browser chưa kết nối</span><button id="connect-browser" disabled>Chọn profile</button></div>
+    </header>
+    <section class="workspace">
+      <aside class="profiles-panel">
+        <div class="panel-title"><h2>List profile</h2><span id="profile-count">0</span></div>
+        <nav id="profile-list" aria-label="Danh sách profile"><div class="loading">Đang tải…</div></nav>
+      </aside>
+      <section class="pages-panel">
+        <div class="panel-title page-heading">
+          <div><p class="eyebrow">DANH SÁCH PAGE</p><h2 id="selected-profile">Chọn profile</h2></div>
+          <span id="page-count">0 Page</span>
+        </div>
+        <div id="page-list" class="page-list"><div class="empty">Chọn một profile bên trái để xem Page.</div></div>
+      </section>
+    </section>
+  </main>
+  <script src="/static/app.js?v=4" defer></script>
+</body>
+</html>

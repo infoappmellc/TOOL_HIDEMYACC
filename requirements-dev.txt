@@ -1,0 +1,4 @@
+-r requirements-dashboard.txt
+-r requirements-agent.txt
+pytest==8.3.4
+

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Đăng nhập · HideMyAcc Studio</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login-body">
+  <main class="login-shell">
+    <section class="login-art">
+      <div class="brand brand-light"><span class="brand-mark">H</span><span>HMA Studio</span></div>
+      <div class="login-copy">
+        <p class="eyebrow">LOCAL-FIRST AUTOMATION</p>
+        <h1>Lên lịch trên cloud.<br><em>Thực thi tại máy bạn.</em></h1>
+        <p>Cookie, profile và video luôn nằm trên local agent. Dashboard chỉ điều phối công việc.</p>
+      </div>
+      <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+    </section>
+    <section class="login-form-wrap">
+      <form class="login-form" method="post" action="/login">
+        <div class="mobile-brand brand"><span class="brand-mark">H</span><span>HMA Studio</span></div>
+        <p class="eyebrow">CHÀO MỪNG TRỞ LẠI</p>
+        <h2>Đăng nhập dashboard</h2>
+        <p class="muted">Dùng mật khẩu quản trị đã đặt trong biến môi trường.</p>
+        {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+        <label>Mật khẩu
+          <input name="password" type="password" required autofocus placeholder="••••••••••••">
+        </label>
+        <button class="button button-primary button-block" type="submit">Tiếp tục <span>→</span></button>
+        <small>Kết nối được bảo vệ bằng session ký HMAC.</small>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+
