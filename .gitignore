@@ -1,4 +1,5 @@
 .venv/
+.venv311/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -7,4 +8,9 @@ __pycache__/
 data/
 output/
 downloads/
-
+# Keep locally downloaded Sound Collection media out of Git.
+sound/*.mp3
+sound/*.m4a
+sound/*.mp4
+sound/*.wav
+sound/*.aac

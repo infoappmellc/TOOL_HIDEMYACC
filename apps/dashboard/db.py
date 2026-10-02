@@ -107,6 +107,42 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS page_run_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    page_id INTEGER NOT NULL REFERENCES page_targets(id) ON DELETE CASCADE,
+                    source_url TEXT NOT NULL,
+                    article_title TEXT NOT NULL DEFAULT '',
+                    video_path TEXT NOT NULL DEFAULT '',
+                    post_url TEXT NOT NULL DEFAULT '',
+                    post_status TEXT NOT NULL DEFAULT 'not_started',
+                    comment_status TEXT NOT NULL DEFAULT 'not_started',
+                    step TEXT NOT NULL DEFAULT 'queued',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_page_run_history_page
+                ON page_run_history(page_id, id DESC);
+
+                CREATE TABLE IF NOT EXISTS page_schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+                    page_ids TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    results TEXT NOT NULL DEFAULT '[]',
+                    error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_page_schedules_active_profile
+                ON page_schedules(profile_id) WHERE status IN ('pending', 'running');
+
+                CREATE INDEX IF NOT EXISTS idx_page_schedules_due
+                ON page_schedules(status, scheduled_at);
+
                 CREATE TABLE IF NOT EXISTS sync_requests (
                     id TEXT PRIMARY KEY,
                     folder_name TEXT NOT NULL,
@@ -129,10 +165,16 @@ class Database:
             self._ensure_column(conn, "profiles", "source", "TEXT NOT NULL DEFAULT 'manual'")
             self._ensure_column(conn, "profiles", "last_synced_at", "TEXT")
             self._ensure_column(conn, "page_targets", "source_url", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_targets", "article_title", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_targets", "article_language", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_targets", "reel_description", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_targets", "video_content", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "page_targets", "video_path", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "page_targets", "workflow_status", "TEXT NOT NULL DEFAULT 'idle'")
             self._ensure_column(conn, "page_targets", "last_error", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "page_targets", "post_url", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_run_history", "article_language", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "page_run_history", "video_content", "TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -305,7 +347,11 @@ class Database:
             where = "WHERE t.profile_id = ?" if profile_id is not None else ""
             params = (profile_id,) if profile_id is not None else ()
             rows = conn.execute(
-                f"""SELECT t.*, p.name AS profile_name
+                f"""SELECT t.*, p.name AS profile_name,
+                   EXISTS(SELECT 1 FROM page_run_history h WHERE h.page_id = t.id
+                          AND h.source_url = t.source_url AND t.source_url != ''
+                          AND h.post_status IN ('submitted', 'published')
+                          AND h.comment_status != 'published') AS needs_comment_retry
                    FROM page_targets t LEFT JOIN profiles p ON p.id = t.profile_id
                    {where}
                    ORDER BY t.name COLLATE NOCASE ASC""",
@@ -336,7 +382,11 @@ class Database:
     def get_page_target(self, page_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
-                """SELECT t.*, p.name AS profile_name, p.hidemyacc_id
+                """SELECT t.*, p.name AS profile_name, p.hidemyacc_id,
+                   EXISTS(SELECT 1 FROM page_run_history h WHERE h.page_id = t.id
+                          AND h.source_url = t.source_url AND t.source_url != ''
+                          AND h.post_status IN ('submitted', 'published')
+                          AND h.comment_status != 'published') AS needs_comment_retry
                    FROM page_targets t JOIN profiles p ON p.id = t.profile_id
                    WHERE t.id = ?""",
                 (page_id,),
@@ -344,7 +394,8 @@ class Database:
             return self._dict(row)
 
     def update_page_workflow(self, page_id: int, **values: Any) -> dict[str, Any] | None:
-        allowed = {"source_url", "video_path", "workflow_status", "last_error", "post_url"}
+        allowed = {"source_url", "article_title", "article_language", "reel_description",
+                   "video_content", "video_path", "workflow_status", "last_error", "post_url"}
         updates = {key: value for key, value in values.items() if key in allowed}
         if not updates:
             return self.get_page_target(page_id)
@@ -358,6 +409,251 @@ class Database:
             if cursor.rowcount == 0:
                 return None
         return self.get_page_target(page_id)
+
+    def bulk_save_page_sources(self, profile_id: int, rows: list[dict[str, Any]]) -> int:
+        """Save validated Page inputs together, or leave every Page unchanged."""
+        if not rows:
+            raise ValueError("Không có Page nào để nhập")
+        now = iso()
+        with self.connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if conn.execute(
+                    "SELECT 1 FROM page_schedules WHERE profile_id = ? AND status IN ('pending', 'running')",
+                    (profile_id,),
+                ).fetchone():
+                    raise ValueError("Profile đang có lịch hẹn; hãy huỷ lịch trước khi nhập hàng loạt")
+                for row in rows:
+                    target = conn.execute(
+                        "SELECT id, source_url, reel_description, video_content FROM page_targets "
+                        "WHERE id = ? AND profile_id = ? AND facebook_id = ?",
+                        (row["id"], profile_id, row["facebook_id"]),
+                    ).fetchone()
+                    if not target:
+                        raise ValueError(f"Page {row['facebook_id']} không còn thuộc profile này")
+                    if conn.execute(
+                        """SELECT 1 FROM page_run_history WHERE page_id = ? AND source_url = ?
+                           AND source_url != '' AND post_status IN ('submitted', 'published')
+                           AND comment_status != 'published' LIMIT 1""",
+                        (target["id"], target["source_url"]),
+                    ).fetchone():
+                        raise ValueError(f"Page {row['facebook_id']} cần xử lý comment trong lịch sử trước")
+                for row in rows:
+                    conn.execute(
+                        """UPDATE page_targets SET source_url = ?, reel_description = ?, video_content = ?,
+                           article_title = ?, article_language = ?, video_path = '', post_url = '',
+                           workflow_status = 'idle', last_error = '', updated_at = ? WHERE id = ?""",
+                        (row["source_url"], row["reel_description"], row["video_content"],
+                         row["reel_description"], row["article_language"], now, row["id"]),
+                    )
+                conn.commit()
+                return len(rows)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def create_page_run_history(self, page_id: int, source_url: str, article_title: str = "",
+                                article_language: str = "", video_content: str = "") -> dict[str, Any]:
+        now = iso()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """INSERT INTO page_run_history
+                   (page_id, source_url, article_title, article_language, video_content, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (page_id, source_url, article_title, article_language, video_content, now, now),
+            )
+            return dict(conn.execute(
+                "SELECT * FROM page_run_history WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone())
+
+    def update_page_run_history(self, history_id: int, **values: Any) -> dict[str, Any] | None:
+        allowed = {"article_title", "article_language", "video_content", "video_path",
+                   "post_url", "post_status", "comment_status", "step", "error"}
+        updates = {key: value for key, value in values.items() if key in allowed}
+        if not updates:
+            return None
+        updates["updated_at"] = iso()
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self.connect() as conn:
+            conn.execute(f"UPDATE page_run_history SET {assignments} WHERE id = ?",
+                         (*updates.values(), history_id))
+            row = conn.execute("SELECT * FROM page_run_history WHERE id = ?", (history_id,)).fetchone()
+            return self._dict(row)
+
+    def list_page_run_history(self, page_id: int, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        limit = min(max(limit, 1), 100)
+        offset = max(offset, 0)
+        with self.connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM page_run_history WHERE page_id = ?", (page_id,)
+            ).fetchone()[0]
+            rows = conn.execute(
+                """SELECT * FROM page_run_history WHERE page_id = ?
+                   ORDER BY id DESC LIMIT ? OFFSET ?""", (page_id, limit, offset)
+            ).fetchall()
+            return {"total": total, "items": [dict(row) for row in rows]}
+
+    def get_page_run_history(self, history_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM page_run_history WHERE id = ?", (history_id,)).fetchone()
+            return self._dict(row)
+
+    @staticmethod
+    def _schedule_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        result = dict(row)
+        result["page_ids"] = json.loads(result["page_ids"])
+        result["results"] = json.loads(result["results"])
+        return result
+
+    def create_page_schedule(self, profile_id: int, page_ids: list[int], scheduled_at: str) -> dict[str, Any]:
+        if not page_ids or len(set(page_ids)) != len(page_ids):
+            raise ValueError("Lịch đăng cần ít nhất một Page hợp lệ")
+        now = iso()
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            profile = conn.execute("SELECT id FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+            if not profile:
+                raise ValueError("Không tìm thấy profile")
+            active = conn.execute(
+                "SELECT id FROM page_schedules WHERE profile_id = ? AND status IN ('pending', 'running')",
+                (profile_id,),
+            ).fetchone()
+            if active:
+                raise ValueError("Profile đã có lịch đăng đang chờ hoặc đang chạy")
+            rows = conn.execute(
+                f"SELECT id, source_url, reel_description, video_content FROM page_targets "
+                f"WHERE profile_id = ? AND id IN ({','.join('?' for _ in page_ids)})",
+                (profile_id, *page_ids),
+            ).fetchall()
+            if len(rows) != len(page_ids) or any(
+                not all(row[key] for key in ("source_url", "reel_description", "video_content"))
+                for row in rows
+            ):
+                raise ValueError("Một Page chưa lưu đủ nội dung để lên lịch")
+            if conn.execute(
+                f"""SELECT 1 FROM page_run_history h JOIN page_targets t ON t.id = h.page_id
+                    WHERE t.profile_id = ? AND t.id IN ({','.join('?' for _ in page_ids)})
+                    AND h.source_url = t.source_url AND h.post_status IN ('submitted', 'published')
+                    AND h.comment_status != 'published' LIMIT 1""",
+                (profile_id, *page_ids),
+            ).fetchone():
+                raise ValueError("Có Page đã gửi bài nhưng comment chưa xong; xử lý trong lịch sử trước")
+            cursor = conn.execute(
+                """INSERT INTO page_schedules
+                   (profile_id, page_ids, scheduled_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (profile_id, json.dumps(page_ids), scheduled_at, now, now),
+            )
+            row = conn.execute("SELECT * FROM page_schedules WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            conn.commit()
+            return self._schedule_dict(row)
+
+    def list_page_schedules(self, profile_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM page_schedules WHERE profile_id = ? ORDER BY id DESC LIMIT ?",
+                (profile_id, min(max(limit, 1), 100)),
+            ).fetchall()
+            return [self._schedule_dict(row) for row in rows]
+
+    def active_page_schedule(self, profile_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM page_schedules WHERE profile_id = ?
+                   AND status IN ('pending', 'running') LIMIT 1""",
+                (profile_id,),
+            ).fetchone()
+            return self._schedule_dict(row)
+
+    def cancel_page_schedule(self, schedule_id: int, profile_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE page_schedules SET status = 'cancelled', updated_at = ?
+                   WHERE id = ? AND profile_id = ? AND status = 'pending'""",
+                (iso(), schedule_id, profile_id),
+            )
+            return cursor.rowcount == 1
+
+    def claim_due_page_schedule(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT * FROM page_schedules WHERE status = 'pending' AND scheduled_at <= ?
+                   ORDER BY scheduled_at, id LIMIT 1""",
+                (iso(),),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            conn.execute(
+                "UPDATE page_schedules SET status = 'running', updated_at = ? WHERE id = ?",
+                (iso(), row["id"]),
+            )
+            updated = conn.execute("SELECT * FROM page_schedules WHERE id = ?", (row["id"],)).fetchone()
+            conn.commit()
+            return self._schedule_dict(updated)
+
+    def finish_page_schedule(self, schedule_id: int, status: str,
+                             results: list[dict[str, Any]], error: str = "") -> None:
+        if status not in {"completed", "failed"}:
+            raise ValueError("Trạng thái lịch đăng không hợp lệ")
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE page_schedules SET status = ?, results = ?, error = ?, updated_at = ?
+                   WHERE id = ? AND status = 'running'""",
+                (status, json.dumps(results, ensure_ascii=False), error, iso(), schedule_id),
+            )
+
+    def recover_interrupted_page_schedules(self) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE page_schedules SET status = 'failed',
+                   error = 'Dashboard đã dừng trong lúc chạy; kiểm tra lịch sử Page trước khi tạo lịch mới',
+                   updated_at = ? WHERE status = 'running'""",
+                (iso(),),
+            )
+            return cursor.rowcount
+
+    def expire_missed_page_schedules(self, grace_seconds: int = 60) -> int:
+        """Avoid an unexpected late post when the dashboard was offline at the chosen time."""
+        cutoff = iso(utcnow() - timedelta(seconds=grace_seconds))
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE page_schedules SET status = 'failed',
+                   error = 'Dashboard không chạy vào giờ hẹn; lịch đã quá hạn và không tự đăng bù',
+                   updated_at = ? WHERE status = 'pending' AND scheduled_at < ?""",
+                (iso(), cutoff),
+            )
+            return cursor.rowcount
+
+    def clear_published_page_inputs(self, page_id: int, history_id: int) -> bool:
+        """Archive the manual video text, then clear only inputs for a verified post."""
+        with self.connect() as conn:
+            target = conn.execute("SELECT * FROM page_targets WHERE id = ?", (page_id,)).fetchone()
+            history = conn.execute(
+                "SELECT * FROM page_run_history WHERE id = ? AND page_id = ?", (history_id, page_id)
+            ).fetchone()
+            if not target or not history or target["workflow_status"] != "published":
+                return False
+            if history["post_status"] != "published" or history["comment_status"] != "published":
+                return False
+            if not target["source_url"] or target["source_url"] != history["source_url"]:
+                return False
+            if target["reel_description"] and target["reel_description"] != history["article_title"]:
+                return False
+            if target["video_content"] and not history["video_content"]:
+                conn.execute(
+                    "UPDATE page_run_history SET video_content = ?, updated_at = ? WHERE id = ?",
+                    (target["video_content"], iso(), history_id),
+                )
+            conn.execute(
+                """UPDATE page_targets SET source_url = '', reel_description = '', video_content = '',
+                   article_title = '', article_language = '', updated_at = ? WHERE id = ?""",
+                (iso(), page_id),
+            )
+            return True
 
     def upsert_page_targets(
         self, targets: list[dict[str, Any]], profile_id: int | None = None
@@ -389,6 +685,61 @@ class Database:
                     ),
                 )
         return self.list_page_targets()
+
+    def sync_page_targets(
+        self, profile_id: int, targets: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Replace a profile's current Page membership without deleting workflow data."""
+        now = iso()
+        normalized: dict[str, dict[str, str]] = {}
+        for target in targets:
+            facebook_id = str(target.get("facebook_id", "")).strip()
+            name = str(target.get("name", "")).strip()
+            url = str(target.get("url", "")).strip()
+            if facebook_id and name:
+                normalized[facebook_id] = {
+                    "facebook_id": facebook_id,
+                    "name": name,
+                    "url": url or f"https://www.facebook.com/profile.php?id={facebook_id}",
+                }
+
+        with self.connect() as conn:
+            if not conn.execute("SELECT 1 FROM profiles WHERE id = ?", (profile_id,)).fetchone():
+                raise ValueError("Hidemyacc profile không tồn tại")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Detach stale rows instead of deleting them so generated videos,
+                # source links and publish history remain recoverable.
+                if normalized:
+                    placeholders = ",".join("?" for _ in normalized)
+                    conn.execute(
+                        f"""UPDATE page_targets SET profile_id = NULL, updated_at = ?
+                            WHERE profile_id = ? AND facebook_id NOT IN ({placeholders})""",
+                        (now, profile_id, *normalized.keys()),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE page_targets SET profile_id = NULL, updated_at = ? WHERE profile_id = ?",
+                        (now, profile_id),
+                    )
+                for target in normalized.values():
+                    conn.execute(
+                        """INSERT INTO page_targets
+                           (facebook_id, name, url, profile_id, created_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(facebook_id) DO UPDATE SET
+                           name = excluded.name, url = excluded.url,
+                           profile_id = excluded.profile_id, updated_at = excluded.updated_at""",
+                        (
+                            target["facebook_id"], target["name"], target["url"],
+                            profile_id, now, now,
+                        ),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return self.list_page_targets(profile_id)
 
     def create_profile(self, data: dict[str, Any]) -> dict[str, Any]:
         now = iso()

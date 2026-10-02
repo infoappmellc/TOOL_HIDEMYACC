@@ -3,29 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Facebook Profiles</title>
-  <link rel="stylesheet" href="/static/app.css?v=4">
+  <title>Quản lý đăng Reel</title>
+  <link rel="stylesheet" href="/static/app.css?v=18">
 </head>
 <body>
   <main class="app">
     <header>
-      <div><p class="eyebrow">HIDEMYACC</p><h1>Facebook Profiles</h1><p>Chọn profile, nhập link nguồn cho từng Page rồi tạo và đăng Reel.</p></div>
+      <div><p class="eyebrow">HIDEMYACC · LOCAL DASHBOARD</p><h1>Quản lý đăng Reel</h1><p>Lưu nội dung cho từng Page, đăng ngay hoặc hẹn giờ chạy hàng loạt.</p></div>
       <div class="browser-box"><span id="browser-status">Browser chưa kết nối</span><button id="connect-browser" disabled>Chọn profile</button></div>
     </header>
     <section class="workspace">
       <aside class="profiles-panel">
-        <div class="panel-title"><h2>List profile</h2><span id="profile-count">0</span></div>
+        <div class="panel-title"><h2>Profile</h2><span id="profile-count">0</span></div>
         <nav id="profile-list" aria-label="Danh sách profile"><div class="loading">Đang tải…</div></nav>
       </aside>
       <section class="pages-panel">
         <div class="panel-title page-heading">
           <div><p class="eyebrow">DANH SÁCH PAGE</p><h2 id="selected-profile">Chọn profile</h2></div>
-          <span id="page-count">0 Page</span>
+          <div class="page-heading-actions"><span id="page-count">0 Page</span><span id="run-status" hidden></span><button id="pause-run" class="secondary" hidden>Tạm dừng</button><button id="resume-run" class="primary" hidden>Tiếp tục</button><button id="refresh-pages" class="secondary" disabled>Quét lại Page</button><button id="bulk-import-open" class="secondary" disabled>Nhập hàng loạt</button><button id="run-all-pages" class="primary" disabled>Đăng tất cả (0)</button></div>
         </div>
+        <div class="overview" aria-label="Tổng quan Page"><div><strong id="ready-count">0</strong><span>Sẵn sàng đăng</span></div><div><strong id="draft-count">0</strong><span>Cần nhập nội dung</span></div><div><strong id="failed-count">0</strong><span>Cần kiểm tra</span></div></div>
+        <section class="schedule-panel" aria-labelledby="schedule-heading">
+          <div><p class="eyebrow">TỰ ĐỘNG ĐĂNG</p><h3 id="schedule-heading">Hẹn giờ cho các Page đã sẵn sàng</h3><p>Chọn giờ theo máy này. Dashboard phải đang chạy; profile sẽ được kết nối khi đến giờ. Mỗi Page chỉ chạy một lần trong lịch.</p></div>
+          <form id="schedule-form" class="schedule-form"><label for="schedule-time">Thời điểm đăng</label><input id="schedule-time" type="datetime-local" required><button id="schedule-submit" class="primary" type="submit" disabled>Đặt lịch</button></form>
+          <div id="schedule-list" class="schedule-list" aria-live="polite"></div>
+        </section>
+        <div class="page-tools"><label for="page-search">Tìm Page<input id="page-search" type="search" placeholder="Tên Page hoặc ID"></label><label for="page-filter">Hiển thị<select id="page-filter"><option value="all">Tất cả</option><option value="ready">Sẵn sàng đăng</option><option value="draft">Cần nhập nội dung</option><option value="failed">Có lỗi</option></select></label></div>
+        <section id="run-log-panel" class="run-log-panel" aria-label="Tiến độ chạy" hidden>
+          <h3>Tiến độ realtime</h3>
+          <ol id="run-log" class="run-log" aria-live="polite"></ol>
+        </section>
         <div id="page-list" class="page-list"><div class="empty">Chọn một profile bên trái để xem Page.</div></div>
       </section>
     </section>
   </main>
-  <script src="/static/app.js?v=4" defer></script>
+  <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
+    <div class="history-head"><div><p class="eyebrow">LỊCH SỬ PAGE</p><h2 id="history-title">Lịch sử</h2></div><button id="history-close" class="secondary" type="button">Đóng</button></div>
+    <div id="history-content" class="history-content">Đang tải…</div>
+    <div class="history-footer"><button id="history-refresh" class="secondary" type="button">Làm mới</button><button id="history-more" class="secondary" type="button" hidden>Xem thêm</button></div>
+  </dialog>
+  <dialog id="bulk-dialog" class="bulk-dialog" aria-labelledby="bulk-title">
+    <div class="history-head"><div><p class="eyebrow">NHẬP NHANH THEO PROFILE</p><h2 id="bulk-title">Nhập nội dung hàng loạt</h2></div><button id="bulk-close" class="secondary" type="button">Đóng</button></div>
+    <p>Điền 4 cột theo đúng thứ tự: <code>page_id</code>, <code>link_bao</code>, <code>mo_ta_reel</code>, <code>noi_dung_video</code>. Dán từ bảng tính hoặc chọn file TSV. Nếu nội dung có xuống dòng, giữ nội dung trong một ô bảng tính.</p>
+    <div class="bulk-tools"><button id="bulk-template" class="secondary" type="button">Tải mẫu Page của profile</button><label class="secondary bulk-file-label">Chọn file TSV<input id="bulk-file" type="file" accept=".tsv,.txt,text/tab-separated-values" hidden></label></div>
+    <label class="bulk-input-label" for="bulk-text">Dữ liệu TSV</label><textarea id="bulk-text" rows="10" spellcheck="false" placeholder="page_id&#9;link_bao&#9;mo_ta_reel&#9;noi_dung_video"></textarea>
+    <div id="bulk-preview" class="bulk-preview" aria-live="polite">Chưa kiểm tra dữ liệu.</div>
+    <div class="history-footer"><button id="bulk-check" class="secondary" type="button">Kiểm tra & xem trước</button><button id="bulk-apply" class="primary" type="button" disabled>Lưu hàng loạt</button></div>
+  </dialog>
+  <script src="/static/app.js?v=18" defer></script>
 </body>
 </html>
